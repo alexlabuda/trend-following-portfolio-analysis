@@ -1108,8 +1108,8 @@ bh = raw_data %>%
   theme_classic()
 bh
 
-ggsave("aapl_returns_hist.png", plot = p)
-ggsave("aapl_buy_hold_returns.png", plot = bh)
+# ggsave("aapl_returns_hist.png", plot = p)
+# ggsave("aapl_buy_hold_returns.png", plot = bh)
 ```
 
 ### Delta Airlines Stock
@@ -1125,7 +1125,7 @@ p_dal <- dal_df %>%
   theme_classic()
 p_dal
 
-ggsave("dal_returns_hist.png", plot = p_dal)
+# ggsave("dal_returns_hist.png", plot = p_dal)
 ```
 ## Mean and Standard Deviation
 
