@@ -1,0 +1,1401 @@
+---
+title: "Trend Following System - Apple Stock"
+description: |
+  Calculate slow and fast exponential moving averages for AAPL stock using historical data, visualize results and calculate return and performance metrics. Our strategy purchases the stock as the fast  exponential moving average crosses above the slow moving average. This system does not go short.
+author: 
+  - name: Alex Labuda
+    affiliation: Suny New Paltz School of Business - Analytics Capstone
+  - name: Camila Campi
+  - name: Deniz Ahman
+date: "9/9/2021"
+output:
+  distill::distill_article:
+    toc: true
+    toc_depth: 4
+---
+
+```{r setup, echo=FALSE, include=FALSE}
+# Import relevant packages for this script
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(tidyquant)
+library(ggplot2)
+library(tidyverse)
+library(plotly)
+library(quantmod)
+library(dplyr)
+library(hrbrthemes)
+```
+
+# Retrieve Apple and S&P500 Historical Data
+
+```{r echo=FALSE}
+# silence warnings
+getSymbols.warning4.0=FALSE
+
+# stock data for Apple and the S&P 500
+getSymbols("AAPL", src='yahoo', )
+getSymbols("^GSPC", src='yahoo',)
+getSymbols("DAL", src = 'yahoo',)
+```
+
+```{r ,echo=FALSE}
+# Save apple data to a dataframe
+df <- data.frame(Date=index(AAPL),coredata(AAPL))
+# take most recent observations
+df <- tail(df, 4000)
+# reset index
+rownames(df) = NULL
+
+
+# Save DAL data to a dataframe
+dal_df <- data.frame(Date=index(DAL),coredata(DAL))
+# take most recent observations
+dal <- tail(dal_df, 4000)
+# reset index
+rownames(dal) = NULL
+
+
+# SPX to a dataframe
+SPX <- data.frame(Date=index(GSPC),coredata(GSPC))
+# take most recent observations
+SPX <- tail(SPX, 4000)
+# reset index
+rownames(SPX) = NULL
+```
+
+```{r ,echo=FALSE}
+# copy the data
+raw_data = df
+dal_df = dal
+```
+
+```{r,echo=FALSE}
+# rename AAPL columns for simplicity
+names(raw_data)[names(raw_data)=="AAPL.Open"] = "Open"
+names(raw_data)[names(raw_data)=="AAPL.High"] = "High"
+names(raw_data)[names(raw_data)=="AAPL.Low"] = "Low"
+names(raw_data)[names(raw_data)=="AAPL.Close"] = "Close"
+names(raw_data)[names(raw_data)=="AAPL.Volume"] = "Volume"
+names(raw_data)[names(raw_data)=="AAPL.Adjusted"] = "Price"
+
+# rename DAL columns for simplicity
+names(dal_df)[names(dal_df)=="DAL.Open"] = "Open"
+names(dal_df)[names(dal_df)=="DAL.High"] = "High"
+names(dal_df)[names(dal_df)=="DAL.Low"] = "Low"
+names(dal_df)[names(dal_df)=="DAL.Close"] = "Close"
+names(dal_df)[names(dal_df)=="DAL.Volume"] = "Volume"
+names(dal_df)[names(dal_df)=="DAL.Adjusted"] = "Price"
+
+# rename SPX columns for simplicity
+names(SPX)[names(SPX)=="GSPC.Open"] = "Open"
+names(SPX)[names(SPX)=="GSPC.High"] = "High"
+names(SPX)[names(SPX)=="GSPC.Low"] = "Low"
+names(SPX)[names(SPX)=="GSPC.Close"] = "Close"
+names(SPX)[names(SPX)=="GSPC.Volume"] = "Volume"
+names(SPX)[names(SPX)=="GSPC.Adjusted"] = "Price"
+```
+
+## Sample Period
+
+**Apple**
+```{r,echo=FALSE}
+# retrieve max and min dates
+date_max = max(raw_data$Date)
+date_min = min(raw_data$Date)
+
+print(paste("Our sample considers OHLC data from", date_min, "through", date_max, "for Apple, Delta and the S&P500"))
+
+summary(raw_data[,1:5], digits = 3)
+sd(raw_data$Close)
+```
+**SPX**
+```{r}
+summary(SPX[,1:5])
+sd(SPX$Close)
+```
+**Delta**
+```{r}
+summary(dal_df[,1:5])
+sd(dal_df$Close)
+```
+
+
+## Calculate Daily Return
+
+Calculate a simple day-to-day return, from adjusted-close to adjusted-close and store in `return` and `log_return` vector:
+
+```{r,echo=FALSE}
+# create a blank column
+raw_data$return = NA
+raw_data$log_return = NA
+
+# loop through data and calculate daily returns
+for(t in 2:nrow(raw_data)){
+  raw_data$return[t] = (raw_data$Price[t] - raw_data$Price[t-1])/ raw_data$Price[t-1]
+  raw_data$log_return[t] = log(raw_data$Price[t]/raw_data$Price[t-1])
+}
+
+
+# Do the same for DAL
+dal_df$return = NA
+dal_df$log_return = NA
+
+for(t in 2:nrow(dal_df)){
+  dal_df$return[t] = (dal_df$Price[t] - dal_df$Price[t-1])/ dal_df$Price[t-1]
+  dal_df$log_return[t] = log(dal_df$Price[t]/dal_df$Price[t-1])
+}
+
+
+# Do the same for SP500
+SPX$return = NA
+SPX$log_return = NA
+
+for(t in 2:nrow(SPX)){
+  SPX$return[t] = (SPX$Price[t] - SPX$Price[t-1])/ SPX$Price[t-1]
+  SPX$log_return[t] = log(SPX$Price[t]/SPX$Price[t-1])
+}
+
+
+head(subset(raw_data, select = c("Date", "Close", "return", "log_return")))
+head(subset(dal_df, select = c("Date", "Close", "return", "log_return")))
+head(subset(SPX, select = c("Date", "Close", "return", "log_return")))
+```
+
+# Indicators and Studies
+
+## Simple Moving Averages Functions
+
+Create a function to calculate two simple moving averages of differing lengths for use for a trend-following trading system *(for this system we won't be using a simple moving average)*:
+
+```{r ,echo=FALSE}
+Two_MovAvg_function = function(variable, slow_period = 100, fast_period = 20){
+  # blank list of variables
+  fast_ma = rep(NA, length(variable))
+  slow_ma = rep(NA, length(variable))
+  
+  # loop to calculate average price for each record
+  for (t in (slow_period+1):length(variable)){
+    est_slow = mean(variable[(t-(slow_period+1)):(t-1)])
+    est_fast = mean(variable[(t-(fast_period+1)):(t-1)])
+    # update current average price
+    fast_ma[t] = est_fast
+    slow_ma[t] = est_slow
+  }
+  # create a dataframe for new vectors
+  ma_data = data.frame(fast_ma = fast_ma,
+                       slow_ma  = slow_ma)
+  return(ma_data)
+}
+```
+
+## Exponential Moving Averages Function
+
+Create a function to calculate two exponential moving averages of differing lengths for use for a trend-following trading system  and store in `fast_ma`, `slow_ma` and `ema_diff` vector:
+
+```{r ,echo=FALSE}
+EA_Mov_Avg = function(variable, slow_lag = 100, fast_lag = 25){
+  fast_ea = variable
+  slow_ea = variable
+  ema_diff = rep(NA, length(variable))
+  
+  # Loop to calculate each exponential average
+  for (t in 2:length(variable)){ 
+      est_slow = slow_ea[t-1] + (slow_ea[t] - slow_ea[t-1]) / ((slow_lag + 1) / 2)
+      est_fast = fast_ea[t-1] + (fast_ea[t] - fast_ea[t-1]) / ((fast_lag + 1) / 2)
+      
+      ema_diff[t] = est_slow - est_fast
+      
+    slow_ea[t] = est_slow
+    fast_ea[t] = est_fast
+  }
+  # dataframe for new vector
+  ema_data = data.frame(fast_ema = fast_ea,
+                        slow_ema = slow_ea,
+                        ema_diff = ema_diff)
+  return(ema_data)
+}
+```
+
+```{r ,echo=FALSE}
+# add these as new vectors to original data 
+
+new_df = EA_Mov_Avg(raw_data$Close, slow_lag = 150, fast_lag = 25)
+new_dal_df = EA_Mov_Avg(dal_df$Close, slow_lag = 150, fast_lag = 25)
+
+# Apple
+raw_data$slow_ma = new_df$slow_ema
+raw_data$fast_ma = new_df$fast_ema
+raw_data$ema_diff = new_df$ema_diff
+
+# DAL
+dal_df$slow_ma = new_dal_df$slow_ema
+dal_df$fast_ma = new_dal_df$fast_ema
+dal_df$ema_diff = new_dal_df$ema_diff
+
+
+tail(raw_data)
+tail(dal_df)
+```
+
+## Average True Range
+
+-   **The average true range (ATR)** is a technical analysis indicator, introduced by market technician J. Welles Wilder Jr. in his book New Concepts in Technical Trading Systems, that [measures market volatility](https://www.investopedia.com/articles/trading/08/average-true-range.asp) by decomposing the entire range of an asset price for that period.
+-   The true range indicator is taken as the greatest of the following: current high less the current low; the [absolute value](https://www.investopedia.com/terms/a/absolute-value.asp) of the current high less the previous close; and the absolute value of the current low less the previous close. The ATR is then a [moving average](https://www.investopedia.com/terms/m/movingaverage.asp), generally using 14 days, of the true ranges.
+-   **Here we can use this as a measure of recent volatility** in order to adjust our trade entry position size accordingly. The idea is that we can enter with smaller position sizes during times of greater volatility and larger positions during times of less volatility in an attempt to decrease  risk.
+
+### True Range
+
+First calculate the maximum of the aforementioned ranges and store in `max_range` vector:
+
+```{r, echo=FALSE}
+max_range_functon = function(variable){
+  max_range = rep(0, length(variable))
+  
+  for (t in 2:length(variable$Price)){
+    max_rng = max(abs(variable$High[t] - variable$Low[t]), abs(variable$High[t] - variable$Close[t-1]), abs(variable$Close[t-1] - variable$Low[t]))
+    
+    max_range[t] = max_rng
+  }
+  max_range_data = data.frame(max_range = max_range)
+  
+  return(max_range_data)
+}
+
+# Test Function
+
+
+# Implement on full APPL dataset
+max_range_df = max_range_functon(raw_data)
+# Implement on full DAL dataset
+max_range_dal_df = max_range_functon(dal_df)
+
+
+# Create new variable in data
+raw_data$max_range = max_range_df$max_range
+dal_df$max_range = max_range_dal_df$max_range
+
+subset(raw_data[25:32,], select = c("Date", "Open", "High", "Low", "Close", "max_range"))
+subset(dal_df[25:32,], select = c("Date", "Open", "High", "Low", "Close", "max_range"))
+```
+
+### Average True Range Function
+
+Create function that uses the true range vector to calculate a moving average of the true range with a user-specified lag period and store in `atr` vector:
+
+```{r, echo=FALSE}
+ATR_function = function(variable, lag = 15){
+  atr_list = rep(NA, length(variable))
+  
+  # Loop to create ATR
+  for (t in (lag+2):length(variable)){
+    est_atr = mean(variable[(t-(lag)):t])
+    
+    atr_list[t] = est_atr
+  }
+  
+  atr_data = data.frame(atr = atr_list)
+  return(atr_data)
+}
+# Add vector to our data
+## AAPL
+atr_data = ATR_function(raw_data$max_range)
+raw_data$atr = atr_data$atr
+
+## DAL
+atr_dal_data = ATR_function(dal_df$max_range)
+dal_df$atr = atr_dal_data$atr
+```
+
+### Risk per lot
+
+This is a multiple of the ATR for volatility-based position sizing:
+
+Store in `risk_per_lot` vector:
+
+```{r, echo=FALSE}
+risk_multiplier = 5
+equity = 100000
+
+
+raw_data$risk_per_lot = raw_data$atr * risk_multiplier
+subset(raw_data[200:210,], select = c("Close", "max_range", "atr", "risk_per_lot")) 
+
+dal_df$risk_per_lot = dal_df$atr * risk_multiplier
+subset(dal_df[200:210,], select = c("Close", "max_range", "atr", "risk_per_lot")) 
+```
+
+```{r, echo=FALSE}
+# save moving average cross-over dates for chart annotations
+
+h = raw_data[which((raw_data$fast_ma > raw_data$slow_ma) & (raw_data$fast_ma[-1] < raw_data$slow_ma[-1]))+1,]
+l = raw_data[which((raw_data$fast_ma < raw_data$slow_ma) & (raw_data$fast_ma[-1] > raw_data$slow_ma[-1]))+1,]
+h = na.exclude(h)
+h
+l
+
+
+# save moving average cross-over dates for chart annotations
+
+hi = dal_df[which((dal_df$fast_ma > dal_df$slow_ma) & (dal_df$fast_ma[-1] < dal_df$slow_ma[-1]))+1,]
+lo = dal_df[which((dal_df$fast_ma < dal_df$slow_ma) & (dal_df$fast_ma[-1] > dal_df$slow_ma[-1]))+1,]
+hi = na.exclude(hi)
+hi
+lo = na.exclude(lo)
+lo
+```
+
+```{r, echo=FALSE}
+# Create arrow annotations for trade entry signal
+
+# AAPL
+# Upper annotations
+h_a <- list(
+  x = h$Date,
+  y = h$slow_ma,
+  text = "Sell",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "red",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 1.5,
+  opacity = 0.75,
+  align = "left",
+  ax = 5,
+  ay = -55
+)
+
+# Lower annotations
+
+l_a <- list(
+  x = l$Date,
+  y = l$slow_ma,
+  text = "Buy",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "green",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 1.5,
+  opacity = 0.75,
+  align = "right",
+  ax = -5,
+  ay = 55
+)
+
+
+# figure labels
+f <- list(
+  family = "Courier New, monospace",
+  size = 18,
+  color = "#7f7f7f ")
+x <- list(
+  title = "x Axis",
+  titlefont = f)
+y <- list(
+  title = "y Axis",
+  titlefont = f)
+
+
+# DAL
+
+# Upper annotations
+h_a_dal <- list(
+  x = hi$Date,
+  y = hi$slow_ma,
+  text = "Sell",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "red",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 1.5,
+  opacity = 0.75,
+  align = "left",
+  ax = 5,
+  ay = -55
+)
+
+# Lower annotations
+l_a_dal <- list(
+  x = lo$Date,
+  y = lo$slow_ma,
+  text = "Buy",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "green",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 1.5,
+  opacity = 0.75,
+  align = "right",
+  ax = -5,
+  ay = 55
+)
+
+
+# figure labels
+f <- list(
+  family = "Courier New, monospace",
+  size = 18,
+  color = "#7f7f7f ")
+x <- list(
+  title = "x Axis",
+  titlefont = f)
+y <- list(
+  title = "y Axis",
+  titlefont = f)
+```
+
+# **Candlestick Chart**
+
+## Visualizing the Trend-following System for AAPL
+
+-   The following candlestick chart helps us to visualize what our strategy is doing
+
+-   As the faster price smoothing crosses above the slower lag, the system will buy on that day.
+
+
+```{r, echo=FALSE}
+raw_data$MACD_direction = rep(NA, length(raw_data$Date))
+
+
+# colors column for increasing and decreasing
+for (i in 2:length(raw_data[,1])) {
+  if (raw_data$ema_diff[i] > 0) {
+      raw_data$MACD_direction[i] = 'Increasing'
+  } else {
+      raw_data$MACD_direction[i] = 'Decreasing'
+  }
+}
+
+# color of bars for chart
+i <- list(line = list(color = '#17BECF')) # 'i' for increasing
+d <- list(line = list(color = '#b22222')) # 'd' for decreasing
+
+
+# Plot main data
+fig <- raw_data %>% plot_ly(x = ~Date, type="ohlc",
+          open = ~Open, close = ~Close,
+          high = ~High, low = ~Low, name = "AAPL",
+          increasing = i, decreasing = d)
+
+# Add Fast and Slow moving average lines
+fig <- fig %>% add_lines(x = ~Date, y = ~slow_ma, name = "Slow",
+            line = list(color = '#ccc', width = 0.5),
+            legendgroup = "Bands", inherit = F,
+            showlegend = TRUE, hoverinfo = "none") 
+fig <- fig %>% add_lines(x = ~Date, y = ~fast_ma, name = "Fast",
+            line = list(color = '#E377C2', width = 0.5),
+            hoverinfo = "none", inherit = F)
+# Add y-axis title
+fig <- fig %>% layout(yaxis = list(title = "Price"))
+
+
+# plot MACD line subplot
+fig2 <- raw_data 
+fig2 <- fig2 %>% plot_ly(x=~Date, y=~ema_diff, type='bar', name = "MACD",
+                         color = ~MACD_direction, colors = c("red", "green"), alpha = 0.8)
+fig2 <- fig2 %>% layout(yaxis = list(title = "MACD"))
+
+# use subplot to add plots to the same figure
+fig = subplot(fig, fig2, heights = c(0.8,0.15), nrows = 2,
+              shareX = TRUE, titleY = TRUE)
+
+# Add arrow annotations
+fig <- fig %>% layout(annotations = h_a)
+fig <- fig %>% layout(annotations = l_a)
+
+# Add title
+fig <- fig %>% layout(title = "<b> AAPL - Trend Following System </b>",
+                       xaxis = list(rangeslider = list(visible = F)))
+
+fig
+```
+
+## Visualizing the Trend-following System for DAL
+
+- Here you can see that our system has a difficultly trading securities without clearly identifiable trends.
+- Delta Airlines (DAL) does not have as clear of a bullish trend as we can see with Apple's stock. This is a pitfall for this type of trend-following system.
+
+```{r, echo=FALSE}
+dal_df$MACD_direction = rep(NA, length(dal_df$Date))
+
+
+# colors column for increasing and decreasing
+for (i in 2:length(dal_df[,1])) {
+  if (dal_df$ema_diff[i] > 0) {
+      dal_df$MACD_direction[i] = 'Increasing'
+  } else {
+      dal_df$MACD_direction[i] = 'Decreasing'
+  }
+}
+
+# color of bars for chart
+i <- list(line = list(color = '#17BECF')) # 'i' for increasing
+d <- list(line = list(color = '#b22222')) # 'd' for decreasing
+
+
+# Plot main data
+fig3 <- dal_df %>% plot_ly(x = ~Date, type="ohlc",
+          open = ~Open, close = ~Close,
+          high = ~High, low = ~Low, name = "DAL",
+          increasing = i, decreasing = d)
+
+# Add Fast and Slow moving average lines
+fig3 <- fig3 %>% add_lines(x = ~Date, y = ~slow_ma, name = "Slow",
+            line = list(color = '#ccc', width = 0.5),
+            legendgroup = "Bands", inherit = F,
+            showlegend = TRUE, hoverinfo = "none") 
+fig3 <- fig3 %>% add_lines(x = ~Date, y = ~fast_ma, name = "Fast",
+            line = list(color = '#E377C2', width = 0.5),
+            hoverinfo = "none", inherit = F)
+# Add y-axis title
+fig3 <- fig3 %>% layout(yaxis = list(title = "Price"))
+
+
+# plot MACD line subplot
+fig4 <- dal_df 
+fig4 <- fig4 %>% plot_ly(x=~Date, y=~ema_diff, type='bar', name = "MACD",
+                         color = ~MACD_direction, colors = c("red", "green"), alpha = 0.8)
+fig4 <- fig4 %>% layout(yaxis = list(title = "MACD"))
+
+# use subplot to add plots to the same figure
+fig3 = subplot(fig3, fig4, heights = c(0.8,0.15), nrows = 2,
+              shareX = TRUE, titleY = TRUE)
+
+# Add arrow annotations
+fig3 <- fig3 %>% layout(annotations = h_a_dal)
+fig3 <- fig3 %>% layout(annotations = l_a_dal)
+
+# Add title
+fig3 <- fig3 %>% layout(title = "<b> DAL Stock - Moving Average Crossover </b>",
+                       xaxis = list(rangeslider = list(visible = F)))
+
+fig3
+```
+
+# Generate signals using MA Indicator
+
+## Apple Stock
+
+Now we use our indicator to generate trading signals and store them in `signal` vector:
+
+```{r, echo=FALSE}
+raw_data$signal = NA
+
+# Loop through data to create signal column
+for(t in 100:nrow(raw_data)-1){
+  
+  current_slow = raw_data$slow_ma[t]
+  current_fast = raw_data$fast_ma[t]
+  
+  prev_slow = raw_data$slow_ma[t-1]
+  prev_fast = raw_data$fast_ma[t-1]
+  
+  # use 'if' statement to translate crossover into signals
+  if(current_fast > current_slow & prev_fast < prev_slow) {signal = "B"} else 
+    if(current_fast < current_slow & prev_fast > prev_slow) {signal = "S"} else
+      {signal = "H"}
+  
+  raw_data$signal[t+1] = signal
+}
+
+subset(raw_data[200:210,], select = c("Date","Close", "slow_ma", "fast_ma", "signal"))
+```
+
+## DAL Stock
+
+```{r, echo=FALSE}
+dal_df$signal = NA
+
+# Loop through data to create signal column
+for(t in 100:nrow(dal_df)-1){
+  
+  current_slow = dal_df$slow_ma[t]
+  current_fast = dal_df$fast_ma[t]
+  
+  prev_slow = dal_df$slow_ma[t-1]
+  prev_fast = dal_df$fast_ma[t-1]
+  
+  # use 'if' statement to translate crossover into signals
+  if(current_fast > current_slow & prev_fast < prev_slow) {signal = "B"} else 
+    if(current_fast < current_slow & prev_fast > prev_slow) {signal = "S"} else
+      {signal = "H"}
+  
+  dal_df$signal[t+1] = signal
+}
+
+subset(dal_df[200:210,], select = c("Date","Close", "slow_ma", "fast_ma", "signal"))
+```
+
+
+## Holding Status and Investment Return
+
+### APPLE Stock
+
+After generating the signals, we must calculate the return from our strategy:
+
+Store in `investment_return` vector
+
+```{r, echo=FALSE}
+# used to calculate fill price penalty / skid
+# we will penalize by 40% from the open - high for buy orders
+# and 40% from the open - low for sell orders
+
+buy_weight = .35
+sell_weight = -.35
+```
+
+```{r, echo=FALSE}
+# Generate a holding status column  
+# and investment return column
+
+raw_data$holding = 0      # first record, you are not holding
+raw_data$Inv_return = NA  # obviously the return will also be 0
+
+# we can begin the loop
+for (t in 100:nrow(raw_data)){
+  
+  if(t==1){prev_holding=0} 
+  else {prev_holding=raw_data$holding[t-1]}
+  
+  # look at the signal to decide the change of holding status
+  signal = raw_data$signal[t]
+  if(signal=="B"){raw_data$holding[t]=1} else 
+    if (signal=="S") {raw_data$holding[t]=0} else 
+      if (signal=="H"){raw_data$holding[t]=prev_holding}
+  
+  # Now calculate investment return
+  Open = raw_data$Open[t]
+  Close = raw_data$Close[t]
+  High = raw_data$High[t]
+  Low = raw_data$Low[t]
+  
+  if(prev_holding==0 & signal=="B"){investment_return=Close/((High-Open)*buy_weight+Open) - 1} else 
+    if(prev_holding==0 & signal=="H"){investment_return=0} else 
+      #if(prev_holding==1 & signal=="S"){investment_return=Close[t-1]/(Open*(1+sell_weight)) - 1} else
+      #if(prev_holding==0 & signal=="S"){investment_return=(-1)*(Close/(Open*(1+sell_weight)) - 1)} else
+        if(prev_holding==1 & signal=="B"){investment_return=Close/raw_data$Close[t-1]-1} else
+          if(prev_holding==1 & signal=="H"){investment_return=Close/raw_data$Close[t-1]-1} else
+            {investment_return = Open/raw_data$Close[t-1]-1}
+ 
+   # save the investment return to the dataset
+  raw_data$Inv_return[t] = investment_return}
+```
+
+### DAL Stock
+
+```{r, echo=FALSE}
+# Generate a holding status column  
+# and investment return column
+
+dal_df$holding = 0      # first record, you are not holding
+dal_df$Inv_return = NA  # obviously the return will also be 0
+
+# we can begin the loop
+for (t in 100:nrow(dal_df)){
+  
+  if(t==1){prev_holding=0} 
+  else {prev_holding=dal_df$holding[t-1]}
+  
+  # look at the signal to decide the change of holding status
+  signal = dal_df$signal[t]
+  if(signal=="B"){dal_df$holding[t]=1} else 
+    if (signal=="S") {dal_df$holding[t]=0} else 
+      if (signal=="H"){dal_df$holding[t]=prev_holding}
+  
+  # Now calculate investment return
+  Open = dal_df$Open[t]
+  Close = dal_df$Close[t]
+  High = dal_df$High[t]
+  Low = dal_df$Low[t]
+  
+  if(prev_holding==0 & signal=="B"){investment_return=Close/((High-Open)*buy_weight+Open) - 1} else 
+    if(prev_holding==0 & signal=="H"){investment_return=0} else 
+      #if(prev_holding==1 & signal=="S"){investment_return=Close[t-1]/(Open*(1+sell_weight)) - 1} else
+      #if(prev_holding==0 & signal=="S"){investment_return=(-1)*(Close/(Open*(1+sell_weight)) - 1)} else
+        if(prev_holding==1 & signal=="B"){investment_return=Close/dal_df$Close[t-1]-1} else
+          if(prev_holding==1 & signal=="H"){investment_return=Close/dal_df$Close[t-1]-1} else
+            {investment_return = Open/dal_df$Close[t-1]-1}
+ 
+   # save the investment return to the dataset
+  dal_df$Inv_return[t] = investment_return}
+```
+
+
+## Cumulative Return
+
+### Apple Stock
+
+From the individual daily returns, we must create a cash and number of stocks vector to hold each days current figures.
+
+Calculate and store in `cash` and `n_stock` vector:
+
+```{r, echo=FALSE}
+# starting investment $100,000
+initial_wealth = 100000
+# create vectors to store updates
+raw_data$cash = rep(initial_wealth, length(raw_data$Close))
+raw_data$n_stock = rep(0, length(raw_data$Close))
+
+# loop through signals and simulate the trades
+for (t in 1:length(raw_data$signal)){
+  
+  if(t==1){prev_cash = initial_wealth; n_stock = 0
+    
+    } else
+      
+      {prev_cash = raw_data$cash[t-1]; 
+      n_stock = raw_data$n_stock[t-1]}
+  
+  signal = raw_data$signal[t]
+  Open = raw_data$Open[t]
+  Close = raw_data$Close[t]
+  High = raw_data$High[t]
+  Low = raw_data$Low[t]
+  
+# is.na to deal with rows at  beginning with no signal
+  
+  if(is.na(signal)==TRUE){
+    prev_cash = raw_data$cash[t-1]
+    n_stock = raw_data$n_stock[t-1] 
+    
+    } else
+      
+      if (signal=="B"){
+        buy_skid = (High-Open) * buy_weight + Open
+        trans_prc = buy_skid
+        n_change = floor(prev_cash/trans_prc)
+        stock_n = n_stock + n_change
+        cash = prev_cash - n_change * trans_prc
+            
+        raw_data$cash[t] = cash
+        raw_data$n_stock[t] = stock_n
+        
+        } else
+          
+          if (signal =="S"){
+            sell_skid = (Open-Low) * sell_weight + Open
+            trans_prc = sell_skid
+            n_change = n_stock
+            stock_n = n_change - n_stock
+            cash = prev_cash + n_change * trans_prc
+        
+            raw_data$cash[t] = cash
+            raw_data$n_stock[t] = stock_n
+            
+            }else
+              
+              if (signal == "H") {
+                raw_data$cash[t] = raw_data$cash[t-1]
+                raw_data$n_stock[t] = raw_data$n_stock[t-1]
+                
+                }
+}
+```
+
+### DAL Stock
+
+```{r, echo=FALSE}
+# starting investment $100,000
+initial_wealth = 100000
+# create vectors to store updates
+dal_df$cash = rep(initial_wealth, length(dal_df$Close))
+dal_df$n_stock = rep(0, length(dal_df$Close))
+
+# loop through signals and simulate the trades
+for (t in 1:length(dal_df$signal)){
+  
+  if(t==1){prev_cash = initial_wealth; n_stock = 0
+    
+    } else
+      
+      {prev_cash = dal_df$cash[t-1]; 
+      n_stock = dal_df$n_stock[t-1]}
+  
+  signal = dal_df$signal[t]
+  Open = dal_df$Open[t]
+  Close = dal_df$Close[t]
+  High = dal_df$High[t]
+  Low = dal_df$Low[t]
+  
+# is.na to deal with rows at  beginning with no signal
+  
+  if(is.na(signal)==TRUE){
+    prev_cash = dal_df$cash[t-1]
+    n_stock = dal_df$n_stock[t-1] 
+    
+    } else
+      
+      if (signal=="B"){
+        buy_skid = (High-Open) * buy_weight + Open
+        trans_prc = buy_skid
+        n_change = floor(prev_cash/trans_prc)
+        stock_n = n_stock + n_change
+        cash = prev_cash - n_change * trans_prc
+            
+        dal_df$cash[t] = cash
+        dal_df$n_stock[t] = stock_n
+        
+        } else
+          
+          if (signal =="S"){
+            sell_skid = (Open-Low) * sell_weight + Open
+            trans_prc = sell_skid
+            n_change = n_stock
+            stock_n = n_change - n_stock
+            cash = prev_cash + n_change * trans_prc
+        
+            dal_df$cash[t] = cash
+            dal_df$n_stock[t] = stock_n
+            
+            }else
+              
+              if (signal == "H") {
+                dal_df$cash[t] = dal_df$cash[t-1]
+                dal_df$n_stock[t] = dal_df$n_stock[t-1]
+                
+                }
+}
+```
+
+
+## **Final Return**
+
+### Apple Stock
+
+Calculate the cash plus the value of the stock on hand for the last day in the sample.
+
+Print final return from trend following system and buy-and-hold strategy:
+
+```{r, echo=FALSE}
+## Trend-following system
+# Calculations for final portfolio value
+final_return = raw_data$n_stock[max(index(raw_data))] * raw_data$Close[max(index(raw_data))] + raw_data$cash[max(index(raw_data))-1]
+
+print(paste("Initial Investment:", sprintf("$ %3.2f", initial_wealth)))
+print(paste("Trend-following system Final Return:",sprintf("$ %3.2f" , final_return)))
+
+
+## Buy and hold strategy
+initial_price = raw_data$Open[1]
+final_price = raw_data$Close[max(index(raw_data))]
+
+n_purchased = floor(initial_wealth/initial_price)
+
+total_return = (final_price - initial_price) * n_purchased
+print(paste("Buy and hold system Final Return:",sprintf("$ %3.2f" , total_return)))
+```
+
+### Delta Airlines Stock
+```{r, echo=FALSE}
+## Trend-following system
+# Calculations for final portfolio value
+final_return_dal = dal_df$n_stock[max(index(dal_df))] * dal_df$Close[max(index(dal_df))] + dal_df$cash[max(index(dal_df))-1]
+
+print(paste("Initial Investment:", sprintf("$ %3.2f", initial_wealth)))
+print(paste("Trend-following system Final Return:",sprintf("$ %3.2f" , final_return_dal)))
+
+
+## Buy and hold strategy
+initial_price_dal = dal_df$Open[1]
+final_price_dal = dal_df$Close[max(index(dal_df))]
+
+n_purchased_dal = floor(initial_wealth/initial_price_dal)
+
+total_return_dal = (final_price_dal - initial_price_dal) * n_purchased_dal
+print(paste("Buy and hold system Final Return:",sprintf("$ %3.2f" , total_return_dal)))
+```
+
+# Visualize Days with Largest Loss and Gain
+
+```{r, echo=FALSE}
+max_gain=raw_data[which.max(raw_data$Inv_return),]
+max_loss = raw_data[which.min(raw_data$Inv_return),]
+
+# max(raw_data$Inv_return, na.rm = TRUE)
+
+# Create subset
+max_data = raw_data[3310:3330,]
+min_data = raw_data[3310:3330,]
+max_loss
+max_gain
+```
+
+
+
+```{r, echo=FALSE}
+# Create arrow annotations
+
+# Upper annotations
+h_a <- list(
+  x = max_gain$Date,
+  y = max_gain$Price,
+  text = "Largest Gain",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "green",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 2.5,
+  opacity = 0.75,
+  align = "right",
+  ax = 5,
+  ay = -55
+)
+
+# Lower annotations
+
+l_a <- list(
+  x = max_loss$Date,
+  y = max_loss$Price,
+  text = "Largest Loss",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "green",
+  arrowhead = 5,
+  arrowsize = 0.8,
+  arrowwidth = 2.5,
+  opacity = 0.75,
+  align = "right",
+  ax = -5,
+  ay = 55
+)
+
+
+# figure labels
+f <- list(
+  family = "Courier New, monospace",
+  size = 18,
+  color = "#7f7f7f ")
+x <- list(
+  title = "x Axis",
+  titlefont = f)
+y <- list(
+  title = "y Axis",
+  titlefont = f)
+```
+
+## Largest Gain
+
+```{r, echo=FALSE}
+fig <- max_data %>% plot_ly(x = ~Date, type="ohlc",
+          open = ~Open, close = ~Close,
+          high = ~High, low = ~Low, name = "AAPL",
+          increasing = i, decreasing = d)
+
+# color of bars for chart
+i <- list(line = list(color = '#17BECF')) # 'i' for increasing
+d <- list(line = list(color = '#b22222')) # 'd' for decreasing
+
+# Add Fast and Slow moving average lines
+fig <- fig %>% add_lines(x = ~Date, y = ~slow_ma, name = "Slow",
+            line = list(color = '#ccc', width = 0.5),
+            legendgroup = "Bands", inherit = F,
+            showlegend = TRUE, hoverinfo = "none") 
+fig <- fig %>% add_lines(x = ~Date, y = ~fast_ma, name = "Fast",
+            line = list(color = '#E377C2', width = 0.5),
+            hoverinfo = "none", inherit = F)
+
+# Add y-axis title
+fig <- fig %>% layout(yaxis = list(title = "Price"))
+
+# Add arrow annotations
+fig <- fig %>% layout(annotations = h_a)
+
+# Add title
+fig <- fig %>% layout(title = "AAPL Stock - Strategy Largest 1-Day Gain",
+                       xaxis = list(rangeslider = list(visible = F)))
+
+fig
+```
+
+## Largest Loss
+
+```{r, echo=FALSE}
+fig <- min_data %>% plot_ly(x = ~Date, type="ohlc",
+          open = ~Open, close = ~Close,
+          high = ~High, low = ~Low, name = "AAPL",
+          increasing = i, decreasing = d)
+
+# color of bars for chart
+i <- list(line = list(color = '#17BECF')) # 'i' for increasing
+d <- list(line = list(color = '#b22222')) # 'd' for decreasing
+
+# Add Fast and Slow moving average lines
+fig <- fig %>% add_lines(x = ~Date, y = ~slow_ma, name = "Slow",
+            line = list(color = '#ccc', width = 0.5),
+            legendgroup = "Bands", inherit = F,
+            showlegend = TRUE, hoverinfo = "none") 
+fig <- fig %>% add_lines(x = ~Date, y = ~fast_ma, name = "Fast",
+            line = list(color = '#E377C2', width = 0.5),
+            hoverinfo = "none", inherit = F)
+
+# Add y-axis title
+fig <- fig %>% layout(yaxis = list(title = "Price"))
+
+# Add arrow annotations
+fig <- fig %>% layout(annotations = l_a)
+
+# Add title
+fig <- fig %>% layout(title = "AAPL Stock - Strategy Largest 1-day Loss",
+                       xaxis = list(rangeslider = list(visible = F)))
+
+fig
+```
+
+## Max Adverse & Favorable Single-Day Returns
+
+-   Retrieve the days with the largest single-day loss, gain and average daily return for a simple buy and hold system, as well as for our trend-following system.
+
+-   Compare the results from the two strategies.
+
+```{r, echo=FALSE}
+max_daily_return = round((max(raw_data$Inv_return, na.rm = TRUE)*100),4)
+max_daily_loss =  round((min(raw_data$Inv_return, na.rm = TRUE)*100), 4)
+avg_daily_return = round((mean(raw_data$Inv_return, na.rm = TRUE)*100),4)
+
+bh_max_return = round((max(raw_data$return, na.rm = TRUE)*100),4)
+bh_max_loss =  round((min(raw_data$return, na.rm = TRUE)*100), 4)
+bh_avg_return = round((mean(raw_data$return, na.rm = TRUE)*100),4)
+
+print(paste("Largest 1-day return with trend system:", max_daily_return,"%"))
+print(paste("Largest 1-day loss with trend system:", max_daily_loss,"%"))
+print(paste("Average 1-day with trend system return:", avg_daily_return,"%"))
+
+print(paste("Largest 1-day return buy and hold strategy:", bh_max_return,"%"))
+print(paste("Largest 1-day loss with buy and hold strategy:", bh_max_loss,"%"))
+print(paste("Average 1-day with buy and hold strategy:", bh_avg_return,"%"))
+```
+
+# Performance Evaluation
+
+## Distribution of Returns
+
+### Apple Stock
+
+Create a histogram of returns for a simple buy and hold strategy, as well as for our trend-following system:
+
+```{r echo=FALSE}
+p <- raw_data %>%
+  ggplot(aes(x=Inv_return)) +
+    geom_histogram(fill="#69b3a2", color="#e9ecef", alpha=0.7, binwidth = .005) +
+  coord_cartesian(xlim = c(-0.07, 0.07), ylim = c(0, 500)) +
+  labs(x = "Investment Returns", y = "Frequency of Returns",
+       title = "AAPL EMA Crossover - Histogram of Investment Returns",
+       caption = "Trend following system - Slow lag: 150 periods, Fast lag: 25 periods")+
+  theme_classic()
+p
+
+
+bh = raw_data %>%
+  ggplot(aes(x=return)) +
+    geom_histogram(fill="#69b3a2", color="#e9ecef", alpha=0.7, binwidth = .005) +
+  coord_cartesian(xlim = c(-0.07, 0.07), ylim = c(0, 500)) +
+  labs(x = "Investment Returns", y = "Frequency of Returns",
+       title = "AAPL Buy / Hold - Histogram of Investment Returns",
+       caption = "This histogram considers a buy and hold strategy")+
+  theme_classic()
+bh
+
+ggsave("aapl_returns_hist.png", plot = p)
+ggsave("aapl_buy_hold_returns.png", plot = bh)
+```
+
+### Delta Airlines Stock
+
+```{r, echo=FALSE}
+p_dal <- dal_df %>%
+  ggplot(aes(x=Inv_return)) +
+    geom_histogram(fill="#69b3a2", color="#e9ecef", alpha=0.7, binwidth = .005) +
+  coord_cartesian(xlim = c(-0.07, 0.07), ylim = c(0, 280)) +
+  labs(x = "Investment Returns", y = "Frequency of Returns",
+       title = "DAL EMA Crossover - Histogram of Investment Returns",
+       caption = "Trend following system - Slow lag: 150 periods, Fast lag: 25 periods")+
+  theme_classic()
+p_dal
+
+ggsave("dal_returns_hist.png", plot = p_dal)
+```
+## Mean and Standard Deviation
+
+### AAPL
+
+Retrieve the average daily return and volatility of our trend-following system, as well as a simple buy and hold strategy:
+
+```{r, echo=FALSE}
+average_return = mean(raw_data$Inv_return, na.rm = TRUE) # average return
+volatility = sd(raw_data$Inv_return, na.rm = TRUE) # volatility
+
+print(paste("Average return:", round(average_return,6)))
+print(paste("Volatility:", round(volatility,6)))
+
+
+bh_average_return = mean(raw_data$return, na.rm = TRUE) # average return
+bh_volatility = sd(raw_data$return, na.rm = TRUE) # volatility
+
+print(paste("Average return buy hold system:", round(bh_average_return,6)))
+print(paste("Volatility buy hold system:", round(bh_volatility,6)))
+print(paste("Buy and hold strategy experiences larger volatility for a small amount of additional return"))
+```
+
+### DAL
+```{r, echo=FALSE}
+average_return_dal = mean(dal_df$Inv_return, na.rm = TRUE) # average return
+volatility_dal = sd(dal_df$Inv_return, na.rm = TRUE) # volatility
+
+print(paste("DAL Average return:", round(average_return_dal,6)))
+print(paste("DAL Volatility:", round(volatility_dal,6)))
+print(paste("As we can see, the average return when using this system for DAL is much smaller and the volatility is larger. We can expect the Sharpe ratio to be much smaller in this environment"))
+```
+## Sharpe Ratio
+
+### Apple Stock
+
+The Sharpe ratio was developed by Nobel laureate [William F. Sharpe](https://www.investopedia.com/terms/w/william-f-sharpe.asp) and is used to help [investors](https://www.investopedia.com/terms/i/investor.asp) understand the [return of an investment](https://www.investopedia.com/terms/r/returnoninvestment.asp) compared to its risk.12 The ratio is the average return earned in excess of the risk-free rate per unit of [volatility](https://www.investopedia.com/terms/v/volatility.asp) or total risk. Volatility is a measure of the price fluctuations of an asset or portfolio.
+
+-   Our **Sharpe** ratios are based on **daily returns** for both the buy and hold strategy and the trend-following system.
+
+```{r, echo=FALSE}
+rf = .00001 # risk-free rate
+print(paste("AAPL Trend following: Sharpe ratio of daily returns:",round((average_return-rf)/volatility,3)))
+print(paste("AAPL Buy & hold: Sharpe ratio of daily returns:",round((bh_average_return-rf)/bh_volatility,3)))
+
+print(paste("Our AAPL Trend-following system achieves a slightly higher Sharpe ratio"))
+```
+
+### Delta Stock
+
+```{r, echo=FALSE}
+rf = .00001 # risk-free rate
+print(paste("DAL Trend following: Sharpe ratio of daily returns:",round((average_return_dal-rf)/volatility_dal,5)))
+
+print(paste("Compared to Apple Trend-following returns, DAL's example provides a much smaller Sharpe ratio - this is due to whipsaw-like nature of Delta's historical stock price and the trend-following's lack of ability to trade in this type of environment (at least with the parameters we have chosen)"))
+```
+
+## Value at Risk
+
+### Apple Stock
+
+**VAR** measures the cut-off return that your financial asset will fall below with certain probability.
+
+Value at risk (VaR) is a statistic that quantifies the extent of possible financial losses within a firm, portfolio, or position over a specific time frame. This metric is most commonly used by [investment ](https://www.investopedia.com/terms/i/investmentbank.asp)and [commercial banks](https://www.investopedia.com/terms/c/commercialbank.asp) to determine the extent and probabilities of potential losses in their institutional portfolios.
+
+```{r, echo=FALSE}
+var = quantile(raw_data$Inv_return, 0.05, na.rm = TRUE)*100
+bh_var = quantile(raw_data$return, 0.05, na.rm = TRUE)*100
+
+print(paste("Apple Trend-following VAR: we can expect 95% of the time returns will be greater than:", round(var,4)))
+print(paste("Apple Buy / Hold model VAR: we can expect 95% of the time returns will be greater than:", round(bh_var,4)))
+```
+
+### Delta Airlines
+
+```{r, echo=FALSE}
+var_dal = quantile(dal_df$Inv_return, 0.05, na.rm = TRUE)*100
+
+
+print(paste("DAL Trend-following VAR: we can expect 95% of the time returns will be greater than:", round(var_dal,4)))
+```
+
+# Summary of Investment & Market Return
+
+In order to break down risk into two components, we need to collect what part of the return was attributed to the market and what part to our trading system.
+
+## Fit CAPM Model
+
+-   Our $y$ is the excess return of the trading system
+
+-   Our $x$ is the excess return of the market
+
+```{r, echo=FALSE}
+y = raw_data$Inv_return - rf
+x = SPX$return - rf
+```
+
+```{r, echo=FALSE}
+# fit regression
+
+capm = lm(y~x)
+summary(capm)
+
+print(paste("Trend-following system Beta:", round(capm$coefficients[2],4)))
+```
+
+The larger the $BETA$ is, the larger the systematic risk is.
+
+We use this to measure the aggressiveness of the stock or the trading system.
+
+Our trend-following system is mostly conservative.
+
+## Jensen's Alpha (Abnormal Return)
+
+
+-   The regression model's intercept term tells us how much the strategy gives us extra reward, above the market return.
+
+-   Generally we would like to see a positive $ALPHA$
+
+    -   This is associated with its **statistical significance**.
+
+    -   The higher $ALPHA$ the better the investment performance
+
+```{r, echo=FALSE}
+tf_beta = capm$coefficients[2] # beta
+jensens_alpha = capm$coefficients[1] # Jensen's Alpha
+
+print(paste("Jensen's Alpha:", round(jensens_alpha,4)))
+```
+
+## Treynor's Ratio
+
+```{r, echo=FALSE}
+print(paste("Treynor's Ratio Version 1:", round(jensens_alpha/tf_beta, 4)))
+```
+```{r, echo=FALSE}
+print(paste("Treynor's Ratio Version 2:", round(((mean(raw_data$Inv_return, na.rm = TRUE))/tf_beta),4)))
+```
+
+
+# Historical Portfolio Return
+
+```{r}
+raw_data$portfolio_value = raw_data$n_stock*raw_data$Close + raw_data$cash
+```
+
+```{r, echo=FALSE}
+# Create arrow annotations for trade entry signal
+
+# AAPL
+# Upper annotations
+h_a <- list(
+  x = h$Date,
+  y = h$slow_ma,
+  text = "Sell",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "red",
+  arrowhead = 5,
+  arrowsize = 1,
+  arrowwidth = 1.7,
+  opacity = 0.75,
+  align = "left",
+  ax = 5,
+  ay = -55
+)
+
+# Lower annotations
+
+l_a <- list(
+  x = l$Date,
+  y = l$slow_ma,
+  text = "Buy",
+  xref = "x",
+  yref = "y",
+  showarrow = TRUE,
+  arrowcolor = "green",
+  arrowhead = 5,
+  arrowsize = 1,
+  arrowwidth = 1.7,
+  opacity = 0.75,
+  align = "right",
+  ax = -5,
+  ay = 55
+)
+
+
+# figure labels
+f <- list(
+  family = "Courier New, monospace",
+  size = 24,
+  color = "#7f7f7f ")
+x <- list(
+  title = "x Axis",
+  titlefont = f)
+y <- list(
+  title = "y Axis",
+  titlefont = f)
+```
+
+```{r}
+# Plot main data
+fig <- raw_data %>% plot_ly(x = ~Date, type="ohlc",
+          open = ~Open, close = ~Close,
+          high = ~High, low = ~Low, name = "AAPL",
+          increasing = i, decreasing = d)
+
+# Add Fast and Slow moving average lines
+fig <- fig %>% add_lines(x = ~Date, y = ~slow_ma, name = "Slow EMA",
+            line = list(color = '#ccc', width = 0.75),
+            legendgroup = "Bands", inherit = F,
+            showlegend = TRUE, hoverinfo = "none") 
+fig <- fig %>% add_lines(x = ~Date, y = ~fast_ma, name = "Fast EMA",
+            line = list(color = '#E377C2', width = 0.75),
+            legendgroup = "bands",
+            hoverinfo = "none", inherit = F)
+
+ay <- list(
+  tickfont = list(color = "grey"),
+  overlaying = "y",
+  side = "right",
+  title = "<b>Secondary:</b> Portfolio Value")
+
+fig <- fig %>% add_lines(x = ~Date, y = ~portfolio_value, name = "Portfolio Value",
+            line = list(color =  'limegreen', width = 1), dash = 'dot', yaxis = "y2")
+
+# Add y-axis title
+fig <- fig %>% layout(yaxis = list(title = "Price"))
+
+
+# Add arrow annotations
+fig <- fig %>% layout(annotations = h_a)
+fig <- fig %>% layout(annotations = l_a)
+
+
+
+# Add title
+fig <- fig %>% layout(
+  title = "<b>Trend-Following System:</b> Portfolio Value", yaxis2 = ay,
+  xaxis = list(rangeslider = list(visible = F)),
+  yaxis = list(title = "<b>Primary:</b> Stock Price")
+  ) %>%
+  layout(plot_bgcolor = 'rgb(255, 255, 255)',
+         xaxis = list(
+            zerolinecolor = '#ffffff',
+            zerolinewidth = 2,
+            gridcolor = '#ffffff'),
+          yaxis = list(
+            zerolinecolor = '#ffffff',
+            zerolinewidth = 2,
+            gridcolor = '#ffffff')
+          )
+
+
+fig
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
