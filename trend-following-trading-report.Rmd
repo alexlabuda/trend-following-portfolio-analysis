@@ -9,6 +9,8 @@ output:
   distill::distill_article:
     toc: true
     toc_depth: 4
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, echo=FALSE, include=FALSE}
@@ -21,11 +23,12 @@ library(plotly)
 library(quantmod)
 library(dplyr)
 library(hrbrthemes)
+library(gt)
 ```
 
 # Retrieve Apple and S&P500 Historical Data
 
-```{r echo=FALSE}
+```{r echo=FALSE, include=FALSE}
 # silence warnings
 getSymbols.warning4.0=FALSE
 
@@ -63,32 +66,32 @@ rownames(SPX) = NULL
 ```{r ,echo=FALSE}
 # copy the data
 raw_data = df
-dal_df = dal
+dal_df   = dal
 ```
 
 ```{r,echo=FALSE}
 # rename AAPL columns for simplicity
-names(raw_data)[names(raw_data)=="AAPL.Open"] = "Open"
-names(raw_data)[names(raw_data)=="AAPL.High"] = "High"
-names(raw_data)[names(raw_data)=="AAPL.Low"] = "Low"
-names(raw_data)[names(raw_data)=="AAPL.Close"] = "Close"
-names(raw_data)[names(raw_data)=="AAPL.Volume"] = "Volume"
+names(raw_data)[names(raw_data)=="AAPL.Open"]     = "Open"
+names(raw_data)[names(raw_data)=="AAPL.High"]     = "High"
+names(raw_data)[names(raw_data)=="AAPL.Low"]      = "Low"
+names(raw_data)[names(raw_data)=="AAPL.Close"]    = "Close"
+names(raw_data)[names(raw_data)=="AAPL.Volume"]   = "Volume"
 names(raw_data)[names(raw_data)=="AAPL.Adjusted"] = "Price"
 
 # rename DAL columns for simplicity
-names(dal_df)[names(dal_df)=="DAL.Open"] = "Open"
-names(dal_df)[names(dal_df)=="DAL.High"] = "High"
-names(dal_df)[names(dal_df)=="DAL.Low"] = "Low"
-names(dal_df)[names(dal_df)=="DAL.Close"] = "Close"
-names(dal_df)[names(dal_df)=="DAL.Volume"] = "Volume"
+names(dal_df)[names(dal_df)=="DAL.Open"]     = "Open"
+names(dal_df)[names(dal_df)=="DAL.High"]     = "High"
+names(dal_df)[names(dal_df)=="DAL.Low"]      = "Low"
+names(dal_df)[names(dal_df)=="DAL.Close"]    = "Close"
+names(dal_df)[names(dal_df)=="DAL.Volume"]   = "Volume"
 names(dal_df)[names(dal_df)=="DAL.Adjusted"] = "Price"
 
 # rename SPX columns for simplicity
-names(SPX)[names(SPX)=="GSPC.Open"] = "Open"
-names(SPX)[names(SPX)=="GSPC.High"] = "High"
-names(SPX)[names(SPX)=="GSPC.Low"] = "Low"
-names(SPX)[names(SPX)=="GSPC.Close"] = "Close"
-names(SPX)[names(SPX)=="GSPC.Volume"] = "Volume"
+names(SPX)[names(SPX)=="GSPC.Open"]     = "Open"
+names(SPX)[names(SPX)=="GSPC.High"]     = "High"
+names(SPX)[names(SPX)=="GSPC.Low"]      = "Low"
+names(SPX)[names(SPX)=="GSPC.Close"]    = "Close"
+names(SPX)[names(SPX)=="GSPC.Volume"]   = "Volume"
 names(SPX)[names(SPX)=="GSPC.Adjusted"] = "Price"
 ```
 
@@ -107,7 +110,7 @@ sd(raw_data$Close)
 ```
 **SPX**
 ```{r}
-summary(SPX[,1:5])
+summary(SPX[,1:5]) 
 sd(SPX$Close)
 ```
 **Delta**
@@ -153,9 +156,12 @@ for(t in 2:nrow(SPX)){
 }
 
 
-head(subset(raw_data, select = c("Date", "Close", "return", "log_return")))
-head(subset(dal_df, select = c("Date", "Close", "return", "log_return")))
-head(subset(SPX, select = c("Date", "Close", "return", "log_return")))
+head(subset(raw_data, select = c("Date", "Close", "return", "log_return"))) |> 
+  gt()
+head(subset(dal_df, select = c("Date", "Close", "return", "log_return"))) |> 
+  gt()
+head(subset(SPX, select = c("Date", "Close", "return", "log_return"))) |> 
+  gt()
 ```
 
 # Indicators and Studies
