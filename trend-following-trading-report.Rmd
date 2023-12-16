@@ -4,7 +4,6 @@ description: |
   Calculate slow and fast exponential moving averages for AAPL stock using historical data, visualize results and calculate return and performance metrics. Our strategy purchases the stock as the fast  exponential moving average crosses above the slow moving average. This system does not go short.
 author: 
   - name: Alex Labuda
-    affiliation: Suny New Paltz School of Business - Analytics Capstone
 date: "9/9/2021"
 output:
   distill::distill_article:
